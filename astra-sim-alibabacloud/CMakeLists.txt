@@ -1,5 +1,6 @@
 set(use_rdma ${USE_RDMA})
 set(use_analytical ${USE_ANALYTICAL})
+set(use_booksim ${USE_BOOKSIM})
 # SimCCL mock version selection (matches ns3 build default)
 if(DEFINED ENV{SIMAI_NCCL_VERSION})
 	set(MOCK_VERSION $ENV{SIMAI_NCCL_VERSION})
@@ -41,6 +42,21 @@ elseif(use_analytical)
 	list(FILTER HEADERS EXCLUDE REGEX "${PROJECT_SOURCE_DIR}/../../astra-sim/system/PhyMultiThread.hh")
 	list(FILTER astra_SRC EXCLUDE REGEX "${PROJECT_SOURCE_DIR}/../../astra-sim/system/PhyMultiThread.cc")
 	add_definitions(-DANALYTI)
+elseif(use_booksim)
+	# Same source exclusions as the analytical build: the RDMA flow model, the
+	# MPI bootstrap and the physical-network threading are all ns3/phy specific.
+	list(FILTER HEADERS EXCLUDE  REGEX ".*SimAiFlowModelRdma.hh")
+	list(FILTER astra_SRC EXCLUDE REGEX ".*SimAiFlowModelRdma.cc")
+	list(FILTER HEADERS EXCLUDE REGEX "${PROJECT_SOURCE_DIR}/../../astra-sim/system/BootStrapnet.hh")
+	list(FILTER astra_SRC EXCLUDE REGEX "${PROJECT_SOURCE_DIR}/../../astra-sim/system/BootStrapnet.cc")
+	list(FILTER HEADERS EXCLUDE REGEX "${PROJECT_SOURCE_DIR}/../../astra-sim/system/PhyMultiThread.hh")
+	list(FILTER astra_SRC EXCLUDE REGEX "${PROJECT_SOURCE_DIR}/../../astra-sim/system/PhyMultiThread.cc")
+	# Deliberately NOT -DANALYTI: that makes Layer::issue_forward_pass_comm
+	# early-return so no collective is ever issued, which is exactly what this
+	# backend exists to simulate. Also not -DNS3_MTP/-DPHY_MTP: those pull in
+	# MPI and take code paths in NcclFlowModel::run that bypass the
+	# indegree_mapping DAG logic.
+	add_definitions(-DBOOKSIM_BACKEND)
 endif()
 include_directories("${PROJECT_SOURCE_DIR}/../../")
 add_library(AstraSim ${astra_SRC})

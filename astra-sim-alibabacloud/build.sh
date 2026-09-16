@@ -3,6 +3,7 @@ SCRIPT_DIR=$(dirname "$(realpath $0)")
 NS3_BUILD_DIR="${SCRIPT_DIR:?}"/build/astra_ns3
 SIMAI_PHY_BUILD_DIR="${SCRIPT_DIR:?}"/build/simai_phy
 SIMAI_ANALYTICAL_BUILD_DIR="${SCRIPT_DIR:?}"/build/simai_analytical
+SIMAI_BOOKSIM_BUILD_DIR="${SCRIPT_DIR:?}"/build/simai_booksim
 SIM_LOG_DIR=/etc/astra-sim
 
 # Functions
@@ -18,6 +19,9 @@ function cleanup_build {
     "analytical")
         cd "${SIMAI_ANALYTICAL_BUILD_DIR}"
         ./build.sh -l;;
+    "booksim")
+        cd "${SIMAI_BOOKSIM_BUILD_DIR}"
+        bash ./build.sh -l;;
     esac
 }
 
@@ -33,6 +37,9 @@ function cleanup_result {
     "analytical")
         cd "${SIMAI_ANALYTICAL_BUILD_DIR}"
         ./build.sh -lr;;
+    "booksim")
+        cd "${SIMAI_BOOKSIM_BUILD_DIR}"
+        bash ./build.sh -lr;;
     esac
 }
 
@@ -55,6 +62,9 @@ function compile {
     "analytical")
         cd "${SIMAI_ANALYTICAL_BUILD_DIR}"
         ./build.sh -c;;
+    "booksim")
+        cd "${SIMAI_BOOKSIM_BUILD_DIR}"
+        bash ./build.sh -c;;
     esac
 }
 
@@ -68,7 +78,7 @@ case "$1" in
     compile "$2";;
 -h|--help|*)
     printf -- "help message\n"
-    printf -- "-c|--compile mode supported ns3/phy/analytical  (example:./build.sh -c ns3)\n"
+    printf -- "-c|--compile mode supported ns3/phy/analytical/booksim  (example:./build.sh -c ns3)\n"
     printf -- "-l|--clean  (example:./build.sh -l ns3)\n"
     printf -- "-lr|--clean-result mode  (example:./build.sh -lr ns3)\n"
 esac
