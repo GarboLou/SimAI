@@ -1,5 +1,6 @@
 /*
  *Copyright (c) 2024, Alibaba Group;
+ *Copyright (c) 2026, Jiaqi Lou;
  *Licensed under the Apache License, Version 2.0 (the "License");
  *you may not use this file except in compliance with the License.
  *You may obtain a copy of the License at
@@ -22,9 +23,25 @@
 #include <cassert>
 #include <iostream>
 
-uint64_t g_send_lat_ns = 0;
+SendLatency::Config g_sw_lat;
 
 namespace {
+
+// What the software latency charged, for the exit report.
+struct SwLatStats {
+  uint64_t transfers;
+  uint64_t startups;        // transfers that also paid the startup
+  uint64_t startup_ns;
+  uint64_t handoff_ns;
+  uint64_t by_proto[SendLatency::kNumProtos];  // kNccl: protocol looked up
+  uint64_t ll128_as_simple;
+  uint64_t unset_as_simple;
+  SwLatStats() : transfers(0), startups(0), startup_ns(0), handoff_ns(0),
+                 ll128_as_simple(0), unset_as_simple(0) {
+    for(int p = 0; p < SendLatency::kNumProtos; ++p) by_proto[p] = 0;
+  }
+};
+SwLatStats g_sw_stats;
 
 // Everything the completion callbacks need to reconstruct the notify_* call.
 // Allocated per transfer and freed when the receive completes.
@@ -53,7 +70,7 @@ void OnRecvComplete(booksim::FlowId, void * user, uint64_t, void *) {
   delete pf;
 }
 
-// Deferred injection, used when a non-zero software send latency is configured.
+// Deferred injection, used when a transfer has a non-zero software latency.
 void InjectDeferred(void * arg) {
   PendingFlow * pf = (PendingFlow *)arg;
   booksim::FlowDesc d;
@@ -82,7 +99,7 @@ AstraSim::timespec_t BookSimNetwork::sim_get_time() {
 void BookSimNetwork::sim_schedule(AstraSim::timespec_t delta,
                                   void (*fun_ptr)(void * fun_arg),
                                   void * fun_arg) {
-  // delta is RELATIVE ns: Sys::generate_time() overwrites time_val with
+  // delta is relative ns: Sys::generate_time() overwrites time_val with
   // cycles * CLOCK_PERIOD and discards the current time.
   BookSimSim::Schedule((uint64_t)delta.time_val, fun_ptr, fun_arg);
 }
@@ -108,8 +125,28 @@ int BookSimNetwork::sim_send(void * buffer, uint64_t count, int type, int dst,
   pf->sent_notified = false;
   pf->recv_notified = false;
 
-  if(g_send_lat_ns > 0) {
-    BookSimSim::Schedule(g_send_lat_ns, &InjectDeferred, pf);
+  const AstraSim::ncclFlowTag & ft = request->flowTag;
+  SendLatency::Delay lat;
+  if(!SendLatency::Lookup(g_sw_lat, ft.algorithm, ft.protocol, ft.chunk_id, lat)) {
+    std::cerr << "SimAI-BookSim: transfer " << rank << " -> " << dst
+              << " has NCCL algorithm " << ft.algorithm << ", which has no "
+              << "PCIe latency (only Tree, Ring and PAT run without a switch "
+              << "that adds). Use --send-lat-ns or --sw-lat off." << std::endl;
+    exit(1);
+  }
+  const uint64_t delay = lat.startup_ns + lat.handoff_ns;
+  ++g_sw_stats.transfers;
+  if(lat.startup_ns > 0) ++g_sw_stats.startups;
+  g_sw_stats.startup_ns += lat.startup_ns;
+  g_sw_stats.handoff_ns += lat.handoff_ns;
+  if(lat.proto >= 0) ++g_sw_stats.by_proto[lat.proto];
+  if(lat.proto_remapped) {
+    if(ft.protocol == SendLatency::kProtoLL128) ++g_sw_stats.ll128_as_simple;
+    else ++g_sw_stats.unset_as_simple;
+  }
+
+  if(delay > 0) {
+    BookSimSim::Schedule(delay, &InjectDeferred, pf);
   } else {
     booksim::FlowDesc d;
     d.src = rank; d.dst = dst; d.bytes = count; d.cls = 0; d.user = pf;
@@ -203,9 +240,27 @@ int BookSimNetwork::sim_finish() {
                 << it->second << std::endl;
     }
   }
+  BookSimNetworkReportSendLatency();
   BookSimSim::ReportExitState();
   exit(0);
   return 0;
+}
+
+void BookSimNetworkReportSendLatency() {
+  const SwLatStats & s = g_sw_stats;
+  std::cout << "--- software latency ---" << std::endl;
+  std::cout << "  transfers             " << s.transfers << std::endl;
+  std::cout << "  startups charged      " << s.startups << " ("
+            << s.startup_ns << " ns summed)" << std::endl;
+  std::cout << "  hand-offs charged     " << s.handoff_ns << " ns summed"
+            << std::endl;
+  if(g_sw_lat.mode == SendLatency::kNccl) {
+    std::cout << "  looked up as LL       " << s.by_proto[SendLatency::kProtoLL]
+              << std::endl;
+    std::cout << "  looked up as Simple   " << s.by_proto[SendLatency::kProtoSimple]
+              << " (" << s.ll128_as_simple << " chosen as LL128, "
+              << s.unset_as_simple << " with no protocol)" << std::endl;
+  }
 }
 
 // Registered once, by main(), against the single shared engine.

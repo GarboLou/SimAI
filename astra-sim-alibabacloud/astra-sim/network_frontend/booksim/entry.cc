@@ -1,5 +1,6 @@
 /*
  *Copyright (c) 2024, Alibaba Group;
+ *Copyright (c) 2026, Jiaqi Lou;
  *Licensed under the Apache License, Version 2.0 (the "License");
  *you may not use this file except in compliance with the License.
  *You may obtain a copy of the License at
@@ -47,7 +48,7 @@ void notify_receiver_receive_data(int sender_node, int receiver_node,
     if(message_size == t2.count) {
       expeRecvHash.erase(it);
       // The receive was posted with current_flow_id/child_flow_id == -1; the
-      // real identity comes from the SENDER's tag. NcclFlowModel::run reads
+      // real identity comes from the sender's tag. NcclFlowModel::run reads
       // current_flow_id, channel_id and tree_flow_list off this and uses
       // tree_flow_list to decrement indegree_mapping and release the successor
       // flows. Leave the -1s in place and the collective's DAG stalls partway

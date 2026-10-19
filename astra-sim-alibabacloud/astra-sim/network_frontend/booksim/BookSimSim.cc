@@ -1,5 +1,5 @@
 /*
- *Copyright (c) 2024, Alibaba Group;
+ *Copyright (c) 2026, Jiaqi Lou;
  *Licensed under the Apache License, Version 2.0 (the "License");
  *you may not use this file except in compliance with the License.
  *You may obtain a copy of the License at
@@ -136,6 +136,15 @@ void Run() {
 }
 
 void ReportExitState() {
+  // The fabric's own view of the run: per-TLP latency (network: head
+  // injection to tail arrival; total: from TLP creation), the switches each
+  // TLP passed through, and the pinned-multipath counters when routing is
+  // pinned. Every exit path comes through here.
+  if(g_engine) {
+    std::cout << "--- BookSim fabric stats ---" << std::endl;
+    g_engine->DumpPacketStats(std::cout);
+    g_engine->DumpMultipathStats(std::cout);
+  }
   std::cout << "--- BookSim backend exit state ---" << std::endl;
   std::cout << "  time                  " << Now() << " ns" << std::endl;
   std::cout << "  pending event ticks   " << g_evq.size() << std::endl;

@@ -1,5 +1,5 @@
 /*
- *Copyright (c) 2024, Alibaba Group;
+ *Copyright (c) 2026, Jiaqi Lou;
  *Licensed under the Apache License, Version 2.0 (the "License");
  *you may not use this file except in compliance with the License.
  *You may obtain a copy of the License at
@@ -25,7 +25,7 @@ namespace booksim { class Engine; }
 // The simulation driver: owns the BookSim engine, the clock, and the event
 // queue that ASTRA-sim's Sys layer schedules onto.
 //
-// Deliberately NOT modelled on AnaSim (network_frontend/analytical/AnaSim.cc).
+// Deliberately not modelled on AnaSim (network_frontend/analytical/AnaSim.cc).
 // That uses a FIFO std::queue plus `while (task.time != tick) tick++;`, which
 // spins forever the moment an event is inserted out of timestamp order -- which
 // happens as soon as two ranks interleave. It only survives in the analytical

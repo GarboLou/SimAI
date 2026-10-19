@@ -45,15 +45,25 @@ function compile {
         ./build.sh -c analytical 
         ln -s "${SOURCE_ANA_BIN_DIR:?}" "${TARGET_BIN_DIR:?}"/SimAI_analytical;;
     "booksim")
-        mkdir -p "${TARGET_BIN_DIR:?}"
-        mkdir -p "${ROOT_DIR:?}"/results
-        if [ -L "${TARGET_BIN_DIR:?}/SimAI_booksim" ]; then
-            rm -rf "${TARGET_BIN_DIR:?}"/SimAI_booksim
+        # Install only after every step succeeded; on any failure leave
+        # bin/SimAI_booksim exactly as it was and exit nonzero.
+        mkdir -p "${TARGET_BIN_DIR:?}" "${ROOT_DIR:?}"/results || exit 1
+        cd "${SIMAI_DIR:?}" || exit 1
+        if ! bash ./build.sh -lr booksim; then
+            echo "build.sh: cleaning the booksim build failed; bin/SimAI_booksim left unchanged" >&2
+            exit 1
         fi
-        cd "${SIMAI_DIR:?}"
-        bash ./build.sh -lr booksim
-        bash ./build.sh -c booksim
-        ln -s "${SOURCE_BOOKSIM_BIN_DIR:?}" "${TARGET_BIN_DIR:?}"/SimAI_booksim;;
+        if ! bash ./build.sh -c booksim; then
+            echo "build.sh: building SimAI_booksim failed; bin/SimAI_booksim left unchanged" >&2
+            exit 1
+        fi
+        if [ ! -x "${SOURCE_BOOKSIM_BIN_DIR:?}" ]; then
+            echo "build.sh: ${SOURCE_BOOKSIM_BIN_DIR} was not built; bin/SimAI_booksim left unchanged" >&2
+            exit 1
+        fi
+        # Replace whatever is there -- an old symlink or a stale regular file
+        # copied in by hand -- so bin/SimAI_booksim always runs this build.
+        ln -sfn "${SOURCE_BOOKSIM_BIN_DIR:?}" "${TARGET_BIN_DIR:?}"/SimAI_booksim || exit 1;;
     esac
 }
 
@@ -80,8 +90,8 @@ function cleanup_build {
         cd "${SIMAI_DIR:?}"
         ./build.sh -lr analytical;;
     "booksim")
-        if [ -L "${TARGET_BIN_DIR:?}/SimAI_booksim" ]; then
-            rm -rf "${TARGET_BIN_DIR:?}"/SimAI_booksim
+        if [ -L "${TARGET_BIN_DIR:?}/SimAI_booksim" ] || [ -f "${TARGET_BIN_DIR:?}/SimAI_booksim" ]; then
+            rm -f "${TARGET_BIN_DIR:?}"/SimAI_booksim
         fi
         cd "${SIMAI_DIR:?}"
         bash ./build.sh -lr booksim;;

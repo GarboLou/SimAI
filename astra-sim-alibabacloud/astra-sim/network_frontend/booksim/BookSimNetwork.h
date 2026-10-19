@@ -1,5 +1,6 @@
 /*
  *Copyright (c) 2024, Alibaba Group;
+ *Copyright (c) 2026, Jiaqi Lou;
  *Licensed under the Apache License, Version 2.0 (the "License");
  *you may not use this file except in compliance with the License.
  *You may obtain a copy of the License at
@@ -19,6 +20,7 @@
 #include <cstdint>
 
 #include "astra-sim/system/AstraNetworkAPI.hh"
+#include "SendLatency.h"
 
 // One per rank. All instances share the single global BookSim engine and clock
 // held by BookSimSim -- Sys::boostedTick() always reads rank 0's NI, so every
@@ -46,11 +48,11 @@ public:
                void (*msg_handler)(void * fun_arg), void * fun_arg);
 };
 
-// Software send latency applied before a transfer is injected, in ns.
-// ns-3 takes this from NCCL's per-(algorithm, protocol) tuning tables, where it
-// is 7.2-15.9 us. For an intra-host PCIe study that term dominates and would
-// swamp the fabric differences being measured, so it defaults to 0 here and is
-// opt-in via --send-lat-ns.
-extern uint64_t g_send_lat_ns;
+// Software latency applied before a transfer is injected; see SendLatency.h.
+// Defaults to NCCL's own latency model with its PCIe numbers. Set by main().
+extern SendLatency::Config g_sw_lat;
+
+// Prints how much software latency was charged. Called at exit.
+void BookSimNetworkReportSendLatency();
 
 #endif

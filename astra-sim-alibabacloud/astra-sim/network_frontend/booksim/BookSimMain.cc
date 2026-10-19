@@ -1,5 +1,6 @@
 /*
  *Copyright (c) 2024, Alibaba Group;
+ *Copyright (c) 2026, Jiaqi Lou;
  *Licensed under the Apache License, Version 2.0 (the "License");
  *you may not use this file except in compliance with the License.
  *You may obtain a copy of the License at
@@ -21,6 +22,8 @@
 #include "engine/booksim_engine.hpp"
 #include "SimCCL/mock/MockNcclLog.h"
 
+#include <cerrno>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -37,14 +40,43 @@ struct UserArgs {
   std::string booksim_config;
   int         gpus;
   int         gpus_per_server;
-  uint64_t    send_lat_ns;
+  std::string sw_lat;        // --sw-lat: "nccl" or "off"
+  bool        sw_lat_set;
+  int64_t     startup_ns;    // --sw-startup-ns, -1 = NCCL's table
+  int64_t     handoff_ns;    // --sw-handoff-ns, -1 = NCCL's table
+  bool        flat_set;      // --send-lat-ns given
+  uint64_t    flat_ns;
   bool        fast_forward;
   std::string result_prefix;
   std::string gpu_type;
-  UserArgs() : gpus(8), gpus_per_server(8), send_lat_ns(0),
+  UserArgs() : gpus(8), gpus_per_server(8), sw_lat("nccl"), sw_lat_set(false),
+               startup_ns(-1), handoff_ns(-1), flat_set(false), flat_ns(0),
                fast_forward(true), result_prefix("./booksim_"),
                gpu_type("A100") {}
 };
+
+// A whole non-negative decimal number, nothing else: digits only. strtoull
+// alone also takes leading spaces and a sign, and wraps a negative number
+// (" -18446744073709551615" would read as 1).
+bool ParseU64(const char * s, uint64_t & v) {
+  if(!s || !*s) return false;
+  for(const char * p = s; *p; ++p) {
+    if(*p < '0' || *p > '9') return false;
+  }
+  char * end = NULL;
+  errno = 0;
+  unsigned long long x = strtoull(s, &end, 10);
+  if(errno || *end) return false;
+  v = x;
+  return true;
+}
+
+bool ParseNs(const std::string & flag, const char * s, uint64_t & v) {
+  if(ParseU64(s, v) && v <= (uint64_t)INT64_MAX) return true;
+  std::cerr << flag << " needs a non-negative whole number of ns (got '"
+            << s << "')" << std::endl;
+  return false;
+}
 
 void Usage(const char * prog) {
   std::cerr
@@ -54,10 +86,14 @@ void Usage(const char * prog) {
     << "  -g <n>             number of GPUs / ranks (default 8)\n"
     << "  -g_p_s <n>         GPUs per server (default 8)\n"
     << "  -r <prefix>        result path prefix (default ./booksim_)\n"
-    << "  --send-lat-ns <n>  software send latency per transfer, ns (default 0)\n"
-    << "                     ns-3 uses NCCL's 7.2-15.9 us tables here; that term\n"
-    << "                     dominates an intra-host PCIe study, so it is off by\n"
-    << "                     default and opt-in for cross-checking\n"
+    << "  --sw-lat nccl|off  software latency before each transfer (default nccl):\n"
+    << "                     NCCL 2.30's own latency model with its PCIe numbers,\n"
+    << "                     a startup once per chain of dependent transfers plus\n"
+    << "                     a hand-off per transfer (see SendLatency.h)\n"
+    << "  --sw-startup-ns <n>  replace NCCL's startup estimate (all algorithms)\n"
+    << "  --sw-handoff-ns <n>  replace NCCL's hand-off estimate (all algorithms)\n"
+    << "  --send-lat-ns <n>  instead, the same <n> ns before every transfer, like\n"
+    << "                     ns-3's AS_SEND_LAT\n"
     << "  --no-ff            disable idle clock fast-forward (for equivalence tests)\n";
 }
 
@@ -71,12 +107,84 @@ bool ParseArgs(int argc, char ** argv, UserArgs & a) {
     else if(s == "-g_p_s" && has_next)   a.gpus_per_server = atoi(argv[++i]);
     else if(s == "-r" && has_next)       a.result_prefix = argv[++i];
     else if(s == "-g_type" && has_next)  a.gpu_type = argv[++i];
-    else if(s == "--send-lat-ns" && has_next) a.send_lat_ns = strtoull(argv[++i], NULL, 10);
+    else if(s == "--sw-lat" && has_next) {
+      a.sw_lat = argv[++i];
+      a.sw_lat_set = true;
+      if(a.sw_lat != "nccl" && a.sw_lat != "off") {
+        std::cerr << "--sw-lat must be nccl or off (got '" << a.sw_lat << "')"
+                  << std::endl;
+        return false;
+      }
+    }
+    else if(s == "--sw-startup-ns" && has_next) {
+      uint64_t v;
+      if(!ParseNs(s, argv[++i], v)) return false;
+      a.startup_ns = (int64_t)v;
+    }
+    else if(s == "--sw-handoff-ns" && has_next) {
+      uint64_t v;
+      if(!ParseNs(s, argv[++i], v)) return false;
+      a.handoff_ns = (int64_t)v;
+    }
+    else if(s == "--send-lat-ns" && has_next) {
+      if(!ParseNs(s, argv[++i], a.flat_ns)) return false;
+      a.flat_set = true;
+    }
     else if(s == "--no-ff")              a.fast_forward = false;
     else if(s == "-h" || s == "--help")  return false;
     else { std::cerr << "unknown argument: " << s << std::endl; return false; }
   }
+  const bool overrides = a.startup_ns >= 0 || a.handoff_ns >= 0;
+  if(a.flat_set && (a.sw_lat_set || overrides)) {
+    std::cerr << "--send-lat-ns replaces the NCCL model; it cannot be combined "
+              << "with --sw-lat, --sw-startup-ns or --sw-handoff-ns" << std::endl;
+    return false;
+  }
+  if(a.sw_lat == "off" && overrides) {
+    std::cerr << "--sw-startup-ns/--sw-handoff-ns need --sw-lat nccl" << std::endl;
+    return false;
+  }
   return !a.workload.empty() && !a.booksim_config.empty();
+}
+
+SendLatency::Config SwLatConfig(const UserArgs & a) {
+  SendLatency::Config c;
+  if(a.flat_set) {
+    c.mode    = SendLatency::kFlat;
+    c.flat_ns = a.flat_ns;
+  } else if(a.sw_lat == "off") {
+    c.mode = SendLatency::kOff;
+  } else {
+    c.mode       = SendLatency::kNccl;
+    c.startup_ns = a.startup_ns;
+    c.handoff_ns = a.handoff_ns;
+  }
+  return c;
+}
+
+void DescribeSwLat(const SendLatency::Config & c) {
+  std::cout << "SimAI-BookSim: software latency: ";
+  if(c.mode == SendLatency::kOff) {
+    std::cout << "off" << std::endl;
+    return;
+  }
+  if(c.mode == SendLatency::kFlat) {
+    std::cout << c.flat_ns << " ns before every transfer" << std::endl;
+    return;
+  }
+  std::cout << "NCCL 2.30 model, PCIe numbers: startup once per chain + "
+            << "hand-off per transfer; Ring ";
+  if(c.startup_ns >= 0 || c.handoff_ns >= 0) {
+    std::cout << "(overridden) ";
+  }
+  for(int p = 0; p < SendLatency::kNumProtos; ++p) {
+    if(p == SendLatency::kProtoLL128) continue;   // never used over PCIe
+    SendLatency::Delay d;
+    SendLatency::Lookup(c, SendLatency::kAlgoRing, p, 0, d);
+    std::cout << (p == SendLatency::kProtoLL ? "LL " : ", Simple ")
+              << d.startup_ns << " + " << d.handoff_ns << " ns";
+  }
+  std::cout << "; LL128 is looked up as Simple" << std::endl;
 }
 
 } // namespace
@@ -89,7 +197,7 @@ int main(int argc, char ** argv) {
   MockNcclLog * NcclLog = MockNcclLog::getInstance();
   NcclLog->writeLog(NcclLogLevel::INFO, " init SimAI_booksim.log ");
 
-  g_send_lat_ns = args.send_lat_ns;
+  g_sw_lat = SwLatConfig(args);
 
   GPUType gpu_type = GPUType::A100;
   if(args.gpu_type == "A100")      gpu_type = GPUType::A100;
@@ -219,11 +327,13 @@ int main(int argc, char ** argv) {
 
   std::cout << "SimAI-BookSim: running " << nodes_num << " ranks over "
             << args.booksim_config << std::endl;
+  DescribeSwLat(g_sw_lat);
 
   BookSimSim::Run();
 
   std::cout << "SimAI-BookSim finished at " << BookSimSim::Now() << " ns"
             << std::endl;
+  BookSimNetworkReportSendLatency();
   BookSimSim::ReportExitState();
 
   bool clean = expeRecvHash.empty() && sentHash.empty() &&
